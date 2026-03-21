@@ -1,0 +1,14 @@
+{
+  "name": "ai-coding-demo",
+  "version": "1.0.0",
+  "description": "AI Coding Demo Assistant - 全流程AI辅助GitHub Issue开发演示",
+  "main": "main.py",
+  "scripts": {
+    "start": "python main.py",
+    "demo": "python main.py --mode demo",
+    "config": "python -m ai_coding_demo.config.setup"
+  },
+  "keywords": ["ai", "coding", "github", "automation"],
+  "author": "",
+  "license": "MIT"
+}
