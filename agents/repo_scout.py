@@ -1,5 +1,6 @@
 """GitHub Issue Discovery Agent"""
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import List, Optional
@@ -100,12 +101,11 @@ class RepoScoutAgent:
                 "--json", "number,title,body,labels,state,assignee,commentsCount,url,createdAt,repository"
             ]
             env = {"GH_TOKEN": self.token} if self.token else {}
-            import os as os_module
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                env={**os_module.environ, **env}
+                env={**os.environ, **env}
             )
             
             if result.returncode != 0:

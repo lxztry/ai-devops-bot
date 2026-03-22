@@ -1,4 +1,6 @@
 """Git Operations Agent"""
+import os
+import re
 import subprocess
 from pathlib import Path
 from dataclasses import dataclass
@@ -113,7 +115,6 @@ class GitOpsAgent:
     
     def _sanitize_branch_name(self, name: str) -> str:
         """Sanitize string to be a valid git branch name"""
-        import re
         name = name.lower()
         name = re.sub(r"[^a-z0-9\s-]", "", name)
         name = re.sub(r"[\s]+", "-", name)
@@ -236,13 +237,12 @@ class GitOpsAgent:
             ]
             
             env = {"GH_TOKEN": token} if token else {}
-            import os as _os
             result = subprocess.run(
                 cmd,
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                env={**_os.environ, **env} if token else None
+                env={**os.environ, **env} if token else None
             )
             
             if result.returncode == 0:

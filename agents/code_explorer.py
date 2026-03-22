@@ -154,8 +154,10 @@ class CodeExplorerAgent:
         """Analyze repository structure"""
         print(f"🔍 Analyzing repository at {local_path}...")
         
-        files = list(local_path.rglob("*"))
-        file_paths = [f for f in files if f.is_file()]
+        git_dir = local_path / ".git"
+        files = [f for f in local_path.rglob("*") 
+                 if f.is_file() and not f.is_relative_to(git_dir)]
+        file_paths = files
         
         code_files = []
         test_files = []
@@ -204,7 +206,7 @@ class CodeExplorerAgent:
         try:
             with open(file_path, encoding="utf-8", errors="ignore") as f:
                 return sum(1 for _ in f)
-        except:
+        except (IOError, OSError):
             return 0
     
     def _is_main_file(self, file_path: Path, rel_path: str) -> bool:
@@ -246,7 +248,7 @@ class CodeExplorerAgent:
             all_deps.update(data.get("dependencies", {}))
             all_deps.update(data.get("devDependencies", {}))
             return all_deps
-        except:
+        except (IOError, json.JSONDecodeError):
             return {}
     
     def _parse_requirements_txt(self, path: Path) -> Dict[str, str]:
@@ -265,7 +267,7 @@ class CodeExplorerAgent:
                             deps[pkg.strip()] = f"=={ver.strip()}"
                         else:
                             deps[line] = "latest"
-        except:
+        except (IOError, OSError):
             pass
         return deps
     

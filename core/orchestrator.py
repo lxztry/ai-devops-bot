@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from ai_coding_demo.config.settings import Config, check_config
+from ai_coding_demo.core.utils import setup_logging
 from ai_coding_demo.agents.repo_scout import RepoScoutAgent, GitHubIssue
 from ai_coding_demo.agents.code_explorer import CodeExplorerAgent, RepoAnalysis
 from ai_coding_demo.agents.dev_env import DevEnvAgent
@@ -20,6 +21,7 @@ class MasterOrchestrator:
         self.config = config
         self.workspace = config.ensure_workspace()
         self.logger = DocsLogger(config.paths.logs)
+        self.log = setup_logging(config.paths.logs)
         
         self.issue: Optional[GitHubIssue] = None
         self.analysis: Optional[RepoAnalysis] = None
@@ -224,9 +226,10 @@ class MasterOrchestrator:
         try:
             analysis = explorer.clone_and_analyze(repo_url)
             print(f"\n{analysis.structure_summary}")
+            self.log.info(f"Repository analysis complete: {repo_full_name}")
             return analysis
         except Exception as e:
-            print(f"Repository analysis failed: {e}")
+            self.log.error(f"Repository analysis failed: {e}")
             return None
     
     def run_demo_mode(self):

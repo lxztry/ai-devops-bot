@@ -121,10 +121,9 @@ class ImplementationAgent:
     
     def _estimate_complexity(self, issue_body: str, related_files: List[str]) -> str:
         """Estimate implementation complexity"""
+        related_paths = set(related_files)
         lines_count = sum(
-            self.analysis.files[f.path].lines 
-            for f in self.analysis.files 
-            if f.path in related_files
+            f.lines for f in self.analysis.files if f.path in related_paths
         )
         
         issue_length = len(issue_body)

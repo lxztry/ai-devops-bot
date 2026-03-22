@@ -1,6 +1,7 @@
 """Development Environment Setup Agent"""
 import subprocess
 import os
+import sys
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
@@ -66,7 +67,7 @@ class DevEnvAgent:
                 )
                 if result.returncode == 0:
                     return runtime
-            except:
+            except (OSError, subprocess.SubprocessError):
                 continue
         return None
     
@@ -99,13 +100,14 @@ class DevEnvAgent:
             if install_cmd:
                 print(f"📦 Installing dependencies from {dep_name}...")
                 try:
+                    cmd_list = install_cmd.split()
                     result = subprocess.run(
-                        install_cmd,
-                        shell=True,
+                        cmd_list,
                         cwd=self.repo_path,
                         capture_output=True,
                         text=True,
-                        timeout=300
+                        timeout=300,
+                        shell=sys.platform == "win32"
                     )
                     if result.returncode == 0:
                         installed.append(dep_name)
@@ -132,13 +134,14 @@ class DevEnvAgent:
         
         print(f"🧪 Running baseline tests...")
         try:
+            cmd_list = test_cmd.split()
             result = subprocess.run(
-                test_cmd,
-                shell=True,
+                cmd_list,
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                timeout=300
+                timeout=300,
+                shell=sys.platform == "win32"
             )
             
             return EnvSetupResult(
@@ -177,10 +180,11 @@ class DevEnvAgent:
     def check_tool_available(self, tool: str) -> bool:
         """Check if a tool is available"""
         try:
+            cmd = ["where" if sys.platform == "win32" else "which", tool]
             result = subprocess.run(
-                ["which" if os.name != "nt" else "where", tool],
+                cmd,
                 capture_output=True
             )
             return result.returncode == 0
-        except:
+        except (OSError, subprocess.SubprocessError):
             return False
