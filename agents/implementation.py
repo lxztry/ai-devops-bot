@@ -1,10 +1,19 @@
-"""Code Implementation Agent"""
+"""Code Implementation Agent with LLM support"""
 import subprocess
 import re
+import logging
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
-import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from ai_coding_demo.core.llm_client import (
+    get_llm_client, generate_code_prompt, generate_test_prompt, LLMClient
+)
+from ai_coding_demo.core.utils import retry, safe_execute
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -14,6 +23,7 @@ class ImplementationPlan:
     approach: str
     steps: List[str]
     estimated_complexity: str
+    llm_used: bool = False
 
 
 @dataclass
@@ -23,16 +33,26 @@ class ImplementationResult:
     test_results: str
     summary: str
     error: Optional[str] = None
+    llm_generated: bool = False
 
 
 class ImplementationAgent:
     """Implement code changes based on issue requirements"""
     
-    def __init__(self, repo_path: Path, analysis):
+    def __init__(self, repo_path: Path, analysis, llm_provider: str = "openai", llm_model: str = "gpt-4"):
         self.repo_path = Path(repo_path)
         self.analysis = analysis
+        self._llm_client: Optional[LLMClient] = None
+        self._llm_provider = llm_provider
+        self._llm_model = llm_model
     
-    def create_implementation_plan(self, issue_body: str) -> ImplementationPlan:
+    @property
+    def llm_client(self) -> LLMClient:
+        if self._llm_client is None:
+            self._llm_client = get_llm_client(self._llm_provider, model=self._llm_model)
+        return self._llm_client
+    
+    def create_implementation_plan(self, issue_body: str, issue_title: str = "") -> ImplementationPlan:
         """Create a plan for implementing the issue"""
         keywords = self._extract_keywords(issue_body)
         related_files = self._find_related_files(keywords)
@@ -43,6 +63,7 @@ class ImplementationAgent:
             approach=self._determine_approach(issue_body, related_files),
             steps=self._generate_steps(issue_body, related_files),
             estimated_complexity=self._estimate_complexity(issue_body, related_files),
+            llm_used=self.llm_client.is_available(),
         )
         
         return plan
@@ -63,7 +84,7 @@ class ImplementationAgent:
             path_lower = f.path.lower()
             score = sum(1 for kw in keywords if kw in path_lower)
             if score > 0:
-                related.append((f.path, score))
+                related.append((f.path, score, f.language))
         
         related.sort(key=lambda x: x[1], reverse=True)
         return [r[0] for r in related[:10]]
@@ -72,11 +93,11 @@ class ImplementationAgent:
         """Determine the implementation approach"""
         issue_lower = issue_body.lower()
         
-        if any(word in issue_lower for word in ['fix', 'bug', 'error', 'crash']):
+        if any(word in issue_lower for word in ['fix', 'bug', 'error', 'crash', 'issue']):
             return "bug_fix"
-        elif any(word in issue_lower for word in ['add', 'new', 'feature', 'implement']):
+        elif any(word in issue_lower for word in ['add', 'new', 'feature', 'implement', 'support']):
             return "feature_add"
-        elif any(word in issue_lower for word in ['improve', 'optimize', 'enhance']):
+        elif any(word in issue_lower for word in ['improve', 'optimize', 'enhance', 'refactor']):
             return "improvement"
         elif any(word in issue_lower for word in ['test', 'coverage']):
             return "test_addition"
@@ -134,21 +155,26 @@ class ImplementationAgent:
             return "medium"
         return "low"
     
-    def implement(self, plan: ImplementationPlan) -> ImplementationResult:
+    @retry(max_attempts=2, delay=1.0)
+    def implement(self, plan: ImplementationPlan, issue_title: str = "", issue_body: str = "") -> ImplementationResult:
         """Execute the implementation plan"""
         print(f"🛠️  Starting implementation...")
         print(f"   Approach: {plan.approach}")
         print(f"   Complexity: {plan.estimated_complexity}")
         print(f"   Related files: {len(plan.related_files)}")
+        print(f"   LLM Available: {self.llm_client.is_available()}")
         
         files_modified = []
+        llm_generated = False
         
-        for file_path in plan.related_files[:3]:
-            full_path = self.repo_path / file_path
-            if full_path.exists():
-                modified = self._suggest_modification(full_path, plan)
-                if modified:
-                    files_modified.append(file_path)
+        if self.llm_client.is_available() and issue_body:
+            files_modified = self._implement_with_llm(
+                plan, issue_title or "Issue", issue_body
+            )
+            llm_generated = True
+        
+        if not files_modified:
+            files_modified = self._implement_fallback(plan)
         
         test_results = self._run_tests()
         
@@ -157,27 +183,79 @@ class ImplementationAgent:
             files_modified=files_modified,
             test_results=test_results,
             summary=self._generate_summary(plan, files_modified),
+            llm_generated=llm_generated,
         )
     
+    def _implement_with_llm(self, plan: ImplementationPlan, issue_title: str, issue_body: str) -> List[str]:
+        """Implement code using LLM"""
+        modified = []
+        
+        for file_path in plan.related_files[:3]:
+            full_path = self.repo_path / file_path
+            if not full_path.exists():
+                continue
+            
+            try:
+                content = full_path.read_text(encoding="utf-8")
+                language = full_path.suffix.lstrip(".")
+                
+                prompt = generate_code_prompt(
+                    issue_title=issue_title,
+                    issue_body=issue_body,
+                    file_path=file_path,
+                    file_content=content,
+                    language=language,
+                )
+                
+                response = self.llm_client.generate(prompt, max_tokens=4000)
+                
+                if response.content and len(response.content) > len(content) * 0.5:
+                    backup_path = full_path.with_suffix(full_path.suffix + ".bak")
+                    backup_path.write_text(content, encoding="utf-8")
+                    
+                    new_content = response.content
+                    full_path.write_text(new_content, encoding="utf-8")
+                    
+                    modified.append(file_path)
+                    print(f"   ✅ LLM modified: {file_path}")
+                    
+                    backup_path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.error(f"LLM implementation failed for {file_path}: {e}")
+                continue
+        
+        return modified
+    
+    def _implement_fallback(self, plan: ImplementationPlan) -> List[str]:
+        """Fallback implementation without LLM"""
+        modified = []
+        
+        for file_path in plan.related_files[:3]:
+            full_path = self.repo_path / file_path
+            if full_path.exists():
+                result = self._suggest_modification(full_path, plan)
+                if result:
+                    modified.append(file_path)
+        
+        return modified
+    
+    @safe_execute(default=False)
     def _suggest_modification(self, file_path: Path, plan: ImplementationPlan) -> bool:
         """Suggest a modification to a file based on the plan"""
-        try:
-            content = file_path.read_text(encoding="utf-8")
-            lang = file_path.suffix
-            
-            if plan.approach == "test_addition":
-                if lang in ['.py', '.js', '.ts']:
-                    return self._add_simple_test(file_path, content)
-            elif plan.approach == "bug_fix":
-                return self._add_bug_fix_comment(file_path, content, plan)
-            elif plan.approach == "feature_add":
-                return self._add_feature_implementation(file_path, content, plan)
-            
-            return False
-        except Exception as e:
-            print(f"   Warning: Could not process {file_path}: {e}")
-            return False
+        content = file_path.read_text(encoding="utf-8")
+        lang = file_path.suffix
+        
+        if plan.approach == "test_addition":
+            if lang in ['.py', '.js', '.ts']:
+                return self._add_simple_test(file_path, content)
+        elif plan.approach == "bug_fix":
+            return self._add_bug_fix_comment(file_path, content, plan)
+        elif plan.approach == "feature_add":
+            return self._add_feature_implementation(file_path, content, plan)
+        
+        return False
     
+    @safe_execute(default=False)
     def _add_simple_test(self, file_path: Path, content: str) -> bool:
         """Add a simple test case"""
         test_marker = "# AI Coding Demo - Test Case Added"
@@ -190,13 +268,11 @@ class ImplementationAgent:
         new_content += "    \"\"\"Test added by AI Coding Demo\"\"\"\n"
         new_content += "    assert True, 'AI Demo test passed'\n"
         
-        try:
-            file_path.write_text(new_content, encoding="utf-8")
-            print(f"   ✅ Added test to {file_path.name}")
-            return True
-        except:
-            return False
+        file_path.write_text(new_content, encoding="utf-8")
+        print(f"   ✅ Added test to {file_path.name}")
+        return True
     
+    @safe_execute(default=False)
     def _add_bug_fix_comment(self, file_path: Path, content: str, plan: ImplementationPlan) -> bool:
         """Add a bug fix comment"""
         fix_marker = "# AI Coding Demo - Bug Fix Applied"
@@ -208,13 +284,11 @@ class ImplementationAgent:
         new_content += "# Issue: " + plan.issue_description[:100] + "...\n"
         new_content += "# Status: Acknowledged and addressed\n"
         
-        try:
-            file_path.write_text(new_content, encoding="utf-8")
-            print(f"   ✅ Added bug fix note to {file_path.name}")
-            return True
-        except:
-            return False
+        file_path.write_text(new_content, encoding="utf-8")
+        print(f"   ✅ Added bug fix note to {file_path.name}")
+        return True
     
+    @safe_execute(default=False)
     def _add_feature_implementation(self, file_path: Path, content: str, plan: ImplementationPlan) -> bool:
         """Add a feature implementation"""
         feature_marker = "# AI Coding Demo - Feature Implementation"
@@ -237,12 +311,9 @@ class ImplementationAgent:
         else:
             new_feature += f"// Feature: {plan.issue_description[:50]}...\n"
         
-        try:
-            file_path.write_text(content + new_feature, encoding="utf-8")
-            print(f"   ✅ Added feature to {file_path.name}")
-            return True
-        except:
-            return False
+        file_path.write_text(content + new_feature, encoding="utf-8")
+        print(f"   ✅ Added feature to {file_path.name}")
+        return True
     
     def _run_tests(self) -> str:
         """Run the test suite"""
@@ -267,6 +338,7 @@ class ImplementationAgent:
         except subprocess.TimeoutExpired:
             return "timeout"
         except Exception as e:
+            logger.error(f"Test execution failed: {e}")
             return f"error: {str(e)}"
     
     def _generate_summary(self, plan: ImplementationPlan, files_modified: List[str]) -> str:
@@ -277,4 +349,71 @@ Implementation Summary:
 - Complexity: {plan.estimated_complexity}
 - Files modified: {len(files_modified)}
 - Related files analyzed: {len(plan.related_files)}
+- LLM used: {plan.llm_used}
 """
+
+
+class ParallelImplementationAgent(ImplementationAgent):
+    """Implementation agent with parallel file processing"""
+    
+    def implement_parallel(self, plan: ImplementationPlan, issue_title: str = "", issue_body: str = "") -> ImplementationResult:
+        """Execute implementation in parallel"""
+        print(f"🛠️  Starting parallel implementation...")
+        
+        files_to_process = plan.related_files[:5]
+        modified = []
+        
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {
+                executor.submit(self._process_file, f, plan, issue_title, issue_body): f 
+                for f in files_to_process
+            }
+            
+            for future in as_completed(futures):
+                file_path = futures[future]
+                try:
+                    result = future.result()
+                    if result:
+                        modified.append(file_path)
+                except Exception as e:
+                    logger.error(f"Error processing {file_path}: {e}")
+        
+        test_results = self._run_tests()
+        
+        return ImplementationResult(
+            success=len(modified) > 0 or test_results == "passed",
+            files_modified=modified,
+            test_results=test_results,
+            summary=self._generate_summary(plan, modified),
+            llm_generated=self.llm_client.is_available(),
+        )
+    
+    def _process_file(self, file_path: str, plan: ImplementationPlan, issue_title: str, issue_body: str) -> bool:
+        """Process a single file"""
+        full_path = self.repo_path / file_path
+        if not full_path.exists():
+            return False
+        
+        if self.llm_client.is_available() and issue_body:
+            try:
+                content = full_path.read_text(encoding="utf-8")
+                language = full_path.suffix.lstrip(".")
+                
+                prompt = generate_code_prompt(
+                    issue_title=issue_title,
+                    issue_body=issue_body,
+                    file_path=file_path,
+                    file_content=content,
+                    language=language,
+                )
+                
+                response = self.llm_client.generate(prompt, max_tokens=4000)
+                
+                if response.content:
+                    full_path.write_text(response.content, encoding="utf-8")
+                    print(f"   ✅ Processed: {file_path}")
+                    return True
+            except Exception as e:
+                logger.error(f"LLM failed for {file_path}: {e}")
+        
+        return self._suggest_modification(full_path, plan)

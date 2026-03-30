@@ -1,14 +1,17 @@
 """Configuration management for AI Coding Demo"""
 import os
 import json
+import logging
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List
-import shutil
+from functools import lru_cache
 
 
 CONFIG_DIR = Path.home() / ".ai_coding_demo"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+
+ENV_PREFIX = "AI_CODING_"
 
 
 @dataclass
@@ -20,6 +23,14 @@ class GitConfig:
     @property
     def configured(self) -> bool:
         return bool(self.name and self.email and self.token)
+    
+    @classmethod
+    def from_env(cls) -> "GitConfig":
+        return cls(
+            name=os.environ.get(f"{ENV_PREFIX}GIT_NAME", ""),
+            email=os.environ.get(f"{ENV_PREFIX}GIT_EMAIL", ""),
+            token=os.environ.get(f"{ENV_PREFIX}GITHUB_TOKEN", ""),
+        )
 
 
 @dataclass
@@ -29,6 +40,26 @@ class Preferences:
     require_tests: bool = True
     auto_confirm_issue: bool = False
     max_complexity: str = "medium"
+    llm_provider: str = "openai"
+    llm_model: str = "gpt-4"
+    
+    @classmethod
+    def from_env(cls) -> "Preferences":
+        langs_str = os.environ.get(f"{ENV_PREFIX}PREFERRED_LANGUAGES", "")
+        langs = [l.strip() for l in langs_str.split(",")] if langs_str else cls().preferred_languages
+        
+        exclude_str = os.environ.get(f"{ENV_PREFIX}EXCLUDE_ORGS", "")
+        exclude_orgs = [o.strip() for o in exclude_str.split(",")] if exclude_str else []
+        
+        return cls(
+            preferred_languages=langs,
+            exclude_orgs=exclude_orgs,
+            require_tests=os.environ.get(f"{ENV_PREFIX}REQUIRE_TESTS", "true").lower() == "true",
+            auto_confirm_issue=os.environ.get(f"{ENV_PREFIX}AUTO_CONFIRM", "false").lower() == "true",
+            max_complexity=os.environ.get(f"{ENV_PREFIX}MAX_COMPLEXITY", "medium"),
+            llm_provider=os.environ.get(f"{ENV_PREFIX}LLM_PROVIDER", "openai"),
+            llm_model=os.environ.get(f"{ENV_PREFIX}LLM_MODEL", "gpt-4"),
+        )
 
 
 @dataclass
@@ -39,6 +70,13 @@ class Paths:
     def ensure(self):
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.logs.mkdir(parents=True, exist_ok=True)
+    
+    @classmethod
+    def from_env(cls) -> "Paths":
+        return cls(
+            workspace=Path(os.environ.get(f"{ENV_PREFIX}WORKSPACE", str(cls().workspace))),
+            logs=Path(os.environ.get(f"{ENV_PREFIX}LOGS", str(cls().logs))),
+        )
 
 
 @dataclass
@@ -53,23 +91,69 @@ class Config:
             json.dump(asdict(self), f, indent=2, ensure_ascii=False)
     
     @classmethod
+    @lru_cache(maxsize=1)
     def load(cls) -> "Config":
+        env_git = GitConfig.from_env()
+        env_prefs = Preferences.from_env()
+        env_paths = Paths.from_env()
+        
         if CONFIG_FILE.exists():
             try:
                 with open(CONFIG_FILE, encoding="utf-8") as f:
                     data = json.load(f)
+                file_git = GitConfig(**data.get("git", {}))
+                file_prefs = Preferences(**data.get("prefs", {}))
+                file_paths = Paths(**data.get("paths", {}))
+                
                 return cls(
-                    git=GitConfig(**data.get("git", {})),
-                    prefs=Preferences(**data.get("prefs", {})),
-                    paths=Paths(**data.get("paths", {})),
+                    git=GitConfig(
+                        name=env_git.name or file_git.name,
+                        email=env_git.email or file_git.email,
+                        token=env_git.token or file_git.token,
+                    ),
+                    prefs=Preferences(
+                        preferred_languages=env_prefs.preferred_languages or file_prefs.preferred_languages,
+                        exclude_orgs=env_prefs.exclude_orgs or file_prefs.exclude_orgs,
+                        require_tests=env_prefs.require_tests,
+                        auto_confirm_issue=env_prefs.auto_confirm_issue,
+                        max_complexity=env_prefs.max_complexity,
+                        llm_provider=env_prefs.llm_provider,
+                        llm_model=env_prefs.llm_model,
+                    ),
+                    paths=Paths(
+                        workspace=env_paths.workspace or file_paths.workspace,
+                        logs=env_paths.logs or file_paths.logs,
+                    ),
                 )
             except Exception:
                 pass
-        return cls()
+        
+        return cls(
+            git=env_git,
+            prefs=env_prefs,
+            paths=env_paths,
+        )
     
     def ensure_workspace(self):
         self.paths.ensure()
         return self.paths.workspace
+    
+    @classmethod
+    def get_env_help(cls) -> str:
+        return f"""
+Environment Variables:
+  {ENV_PREFIX}GIT_NAME              - Git user name
+  {ENV_PREFIX}GIT_EMAIL             - Git email
+  {ENV_PREFIX}GITHUB_TOKEN          - GitHub Personal Access Token
+  {ENV_PREFIX}PREFERRED_LANGUAGES   - Comma-separated languages (e.g., "Python,TypeScript")
+  {ENV_PREFIX}REQUIRE_TESTS         - Require tests (true/false)
+  {ENV_PREFIX}AUTO_CONFIRM          - Auto confirm issue selection (true/false)
+  {ENV_PREFIX}MAX_COMPLEXITY         - Max complexity (easy/medium/high)
+  {ENV_PREFIX}WORKSPACE              - Workspace directory path
+  {ENV_PREFIX}LOGS                   - Logs directory path
+  {ENV_PREFIX}LLM_PROVIDER           - LLM provider (openai/anthropic)
+  {ENV_PREFIX}LLM_MODEL             - LLM model name
+"""
 
 
 def setup_interactive():
@@ -142,5 +226,27 @@ def print_config_status(config: Config):
     print()
 
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for config command"""
+    import argparse
+    parser = argparse.ArgumentParser(description="AI Coding Demo Configuration")
+    parser.add_argument("--show-env", action="store_true", help="Show environment variable configuration")
+    parser.add_argument("--reset", action="store_true", help="Reset configuration to defaults")
+    
+    args = parser.parse_args()
+    
+    if args.show_env:
+        print(Config.get_env_help())
+        return
+    
+    if args.reset:
+        if CONFIG_FILE.exists():
+            CONFIG_FILE.unlink()
+            print("Configuration reset to defaults.")
+        return
+    
     setup_interactive()
+
+
+if __name__ == "__main__":
+    main()

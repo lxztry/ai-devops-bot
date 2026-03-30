@@ -1,10 +1,19 @@
-"""Code Exploration Agent"""
+"""Code Exploration Agent with AST analysis"""
+import ast
+import json
 import subprocess
 import re
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict, Optional, Set
-import json
+from typing import List, Dict, Optional, Set, Tuple, Any
+from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
+
+from ai_coding_demo.core.utils import safe_execute
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -14,6 +23,31 @@ class CodeFile:
     lines: int
     purpose: str = ""
     dependencies: List[str] = field(default_factory=list)
+    functions: List[str] = field(default_factory=list)
+    classes: List[str] = field(default_factory=list)
+    imports: List[str] = field(default_factory=list)
+    exports: List[str] = field(default_factory=list)
+
+
+@dataclass 
+class DependencyGraph:
+    nodes: Dict[str, Set[str]] = field(default_factory=dict)
+    reverse: Dict[str, Set[str]] = field(default_factory=dict)
+    
+    def add_edge(self, from_module: str, to_module: str):
+        if from_module not in self.nodes:
+            self.nodes[from_module] = set()
+        self.nodes[from_module].add(to_module)
+        
+        if to_module not in self.reverse:
+            self.reverse[to_module] = set()
+        self.reverse[to_module].add(from_module)
+    
+    def get_dependents(self, module: str) -> Set[str]:
+        return self.reverse.get(module, set())
+    
+    def get_dependencies(self, module: str) -> Set[str]:
+        return self.nodes.get(module, set())
 
 
 @dataclass
@@ -28,6 +62,8 @@ class RepoAnalysis:
     dependencies: Dict[str, str] = field(default_factory=dict)
     structure_summary: str = ""
     key_modules: List[str] = field(default_factory=list)
+    dependency_graph: DependencyGraph = field(default_factory=DependencyGraph)
+    ast_analysis: Dict[str, dict] = field(default_factory=dict)
     
     def get_test_command(self) -> Optional[str]:
         """Get the command to run tests"""
@@ -308,3 +344,135 @@ class CodeExplorerAgent:
             if any(kw.lower() in path_lower for kw in keywords):
                 related.append(f.path)
         return related
+    
+    def analyze_with_ast(self, local_path: Path, repo_url: str, parallel: bool = True) -> RepoAnalysis:
+        """Analyze repository with AST parsing"""
+        print(f"🔍 Analyzing repository with AST...")
+        
+        analysis = self.analyze(local_path, repo_url)
+        
+        if parallel:
+            analysis = self._analyze_files_parallel(analysis)
+        else:
+            analysis = self._analyze_files_sequential(analysis)
+        
+        analysis.dependency_graph = self._build_dependency_graph(analysis)
+        analysis.ast_analysis = self._generate_ast_summary(analysis)
+        
+        return analysis
+    
+    def _analyze_files_parallel(self, analysis: RepoAnalysis) -> RepoAnalysis:
+        """Analyze files in parallel using ThreadPoolExecutor"""
+        py_files = [f for f in analysis.files if f.language == "Python"]
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(self._analyze_python_file, py_files))
+        
+        file_map = {f.path: f for f in analysis.files}
+        for result in results:
+            if result and result.path in file_map:
+                code_file = file_map[result.path]
+                code_file.functions = result.functions
+                code_file.classes = result.classes
+                code_file.imports = result.imports
+        
+        return analysis
+    
+    def _analyze_files_sequential(self, analysis: RepoAnalysis) -> RepoAnalysis:
+        """Analyze files sequentially"""
+        for code_file in analysis.files:
+            if code_file.language == "Python":
+                result = self._analyze_python_file(code_file)
+                if result:
+                    code_file.functions = result.functions
+                    code_file.classes = result.classes
+                    code_file.imports = result.imports
+        return analysis
+    
+    @safe_execute(default=None)
+    def _analyze_python_file(self, code_file: CodeFile) -> Optional[CodeFile]:
+        """Analyze a Python file using AST"""
+        local_path = code_file.path
+        full_path = Path(local_path)
+        
+        if not full_path.exists():
+            full_path = Path(code_file.path)
+        
+        try:
+            with open(full_path, encoding="utf-8") as f:
+                tree = ast.parse(f.read(), filename=str(full_path))
+            
+            functions = []
+            classes = []
+            imports = []
+            
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    functions.append(node.name)
+                elif isinstance(node, ast.ClassDef):
+                    classes.append(node.name)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            imports.append(alias.name)
+                    elif node.module:
+                        imports.append(node.module)
+            
+            code_file.functions = functions
+            code_file.classes = classes
+            code_file.imports = imports
+            
+            return code_file
+        except Exception as e:
+            logger.debug(f"AST analysis failed for {code_file.path}: {e}")
+            return None
+    
+    def _build_dependency_graph(self, analysis: RepoAnalysis) -> DependencyGraph:
+        """Build module dependency graph"""
+        graph = DependencyGraph()
+        
+        for code_file in analysis.files:
+            module_name = self._get_module_name(code_file.path)
+            
+            for imp in code_file.imports:
+                graph.add_edge(module_name, imp)
+        
+        return graph
+    
+    def _get_module_name(self, file_path: str) -> str:
+        """Convert file path to module name"""
+        path = Path(file_path)
+        if path.suffix == ".py":
+            return str(path.with_suffix("")).replace("/", ".")
+        return file_path
+    
+    def _generate_ast_summary(self, analysis: RepoAnalysis) -> Dict[str, Any]:
+        """Generate AST analysis summary"""
+        total_functions = sum(len(f.functions) for f in analysis.files)
+        total_classes = sum(len(f.classes) for f in analysis.files)
+        
+        file_counts: Dict[str, int] = {}
+        for code_file in analysis.files:
+            file_counts[code_file.language] = file_counts.get(code_file.language, 0) + 1
+        
+        return {
+            "total_functions": total_functions,
+            "total_classes": total_classes,
+            "files_by_language": file_counts,
+            "avg_functions_per_file": total_functions / len(analysis.files) if analysis.files else 0,
+        }
+    
+    def find_affected_files(self, analysis: RepoAnalysis, target_file: str) -> List[str]:
+        """Find files that might be affected by changes to target file"""
+        graph = analysis.dependency_graph
+        module_name = self._get_module_name(target_file)
+        
+        affected = set()
+        
+        affected.update(graph.get_dependents(module_name))
+        
+        for code_file in analysis.files:
+            if any(target_file.split("/")[-1] in imp for imp in code_file.imports):
+                affected.add(self._get_module_name(code_file.path))
+        
+        return list(affected)

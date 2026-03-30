@@ -1,11 +1,13 @@
 """Master Orchestrator - Coordinates all agents"""
 import sys
 import time
+import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ai_coding_demo.config.settings import Config, check_config
-from ai_coding_demo.core.utils import setup_logging
+from ai_coding_demo.core.utils import setup_logging, StructuredLogger
 from ai_coding_demo.agents.repo_scout import RepoScoutAgent, GitHubIssue
 from ai_coding_demo.agents.code_explorer import CodeExplorerAgent, RepoAnalysis
 from ai_coding_demo.agents.dev_env import DevEnvAgent
@@ -17,16 +19,19 @@ from ai_coding_demo.agents.implementation import ImplementationAgent, Implementa
 class MasterOrchestrator:
     """Coordinates all agents to execute AI coding demo end-to-end"""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, parallel: bool = True):
         self.config = config
         self.workspace = config.ensure_workspace()
         self.logger = DocsLogger(config.paths.logs)
         self.log = setup_logging(config.paths.logs)
+        self.struct_log = StructuredLogger("ai_coding_demo", config.paths.logs / "structured.jsonl")
+        self.parallel = parallel
         
         self.issue: Optional[GitHubIssue] = None
         self.analysis: Optional[RepoAnalysis] = None
         self.plan: Optional[ImplementationPlan] = None
         self.result: Optional[ImplementationResult] = None
+        self.git_agent: Optional[GitOpsAgent] = None
     
     def run(self, interactive: bool = True) -> bool:
         """Run the complete AI coding demo"""
@@ -98,8 +103,22 @@ class MasterOrchestrator:
         step = self.logger.start_step("Step 4: 配置环境")
         print("\nStep 4: 配置开发环境...")
         
-        dev_env = DevEnvAgent(self.analysis.local_path)
-        env_result = dev_env.setup()
+        if self.parallel:
+            env_result, impl_result = self._run_parallel_steps()
+            if impl_result:
+                self.result = impl_result
+        else:
+            dev_env = DevEnvAgent(self.analysis.local_path)
+            env_result = dev_env.setup()
+            
+            impl_agent = ImplementationAgent(
+                self.analysis.local_path, 
+                self.analysis,
+                llm_provider=self.config.prefs.llm_provider,
+                llm_model=self.config.prefs.llm_model
+            )
+            self.plan = impl_agent.create_implementation_plan(self.issue.body, self.issue.title)
+            self.result = impl_agent.implement(self.plan, self.issue.title, self.issue.body)
         
         self.logger.end_step(step, "success" if env_result.success else "warning", details={
             "runtime": env_result.runtime,
@@ -110,16 +129,20 @@ class MasterOrchestrator:
         step = self.logger.start_step("Step 5: 实现功能")
         print("\nStep 5: 实现代码变更...")
         
-        impl_agent = ImplementationAgent(self.analysis.local_path, self.analysis)
-        self.plan = impl_agent.create_implementation_plan(self.issue.body)
-        self.result = impl_agent.implement(self.plan)
-        
-        self.logger.end_step(step, "success" if self.result.success else "warning", details={
-            "approach": self.plan.approach,
-            "complexity": self.plan.estimated_complexity,
-            "files_modified": self.result.files_modified,
-            "test_results": self.result.test_results,
-        })
+        if not self.parallel:
+            self.logger.end_step(step, "success" if self.result.success else "warning", details={
+                "approach": self.plan.approach,
+                "complexity": self.plan.estimated_complexity,
+                "files_modified": self.result.files_modified,
+                "test_results": self.result.test_results,
+            })
+        else:
+            self.logger.end_step(step, "success" if self.result.success else "warning", details={
+                "approach": self.plan.approach if self.plan else "N/A",
+                "complexity": self.plan.estimated_complexity if self.plan else "N/A",
+                "files_modified": self.result.files_modified if self.result else [],
+                "test_results": self.result.test_results if self.result else "N/A",
+            })
         
         step = self.logger.start_step("Step 6: 提交代码")
         print("\nStep 6: 提交代码...")
@@ -240,3 +263,29 @@ class MasterOrchestrator:
         self.config.prefs.auto_confirm_issue = True
         
         return self.run(interactive=False)
+    
+    def _run_parallel_steps(self) -> Tuple:
+        """Run environment setup and implementation in parallel"""
+        dev_env = DevEnvAgent(self.analysis.local_path)
+        impl_agent = ImplementationAgent(
+            self.analysis.local_path, 
+            self.analysis,
+            llm_provider=self.config.prefs.llm_provider,
+            llm_model=self.config.prefs.llm_model
+        )
+        
+        self.plan = impl_agent.create_implementation_plan(self.issue.body, self.issue.title)
+        
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            env_future = executor.submit(dev_env.setup)
+            impl_future = executor.submit(
+                impl_agent.implement, 
+                self.plan, 
+                self.issue.title, 
+                self.issue.body
+            )
+            
+            env_result = env_future.result()
+            impl_result = impl_future.result()
+        
+        return env_result, impl_result
