@@ -1,103 +1,144 @@
-# AI Coding Demo Assistant
+# AI DevOps Bot 🤖
 
-An AI-powered assistant that demonstrates end-to-end AI coding capabilities by automatically discovering GitHub issues, analyzing code, implementing changes, and creating pull requests.
-
-## Quick Start
-
-### 1. Configure the Assistant
-
-```bash
-cd ai_coding_demo
-python -m ai_coding_demo.config.settings
-```
-
-Required settings:
-- Git username and email
-- GitHub Personal Access Token
-
-### 2. Run the Demo
-
-```bash
-# Interactive mode (recommended)
-python main.py
-
-# Demo mode (minimal interaction)
-python main.py --mode demo
-```
+AI-powered DevOps automation bot that helps streamline CI/CD workflows, auto-classify issues, and provide smart code review suggestions.
 
 ## Features
 
-- **GitHub Issue Discovery** - Search and filter issues based on your preferences
-- **Code Analysis** - Understand repository structure and dependencies
-- **Environment Setup** - Auto-detect and install dependencies
-- **Smart Implementation** - Generate code changes based on issue requirements
-- **Git Operations** - Handle branches, commits, and PRs automatically
-- **Execution Logging** - Track and document the entire process
+### 🚀 CI/CD Automation
+- **Auto Build Trigger**: Automatically trigger builds based on code changes
+- **Smart Deploy**: AI-optimized deployment strategies
+- **Rollback Helper**: Intelligent rollback recommendations
 
-## Project Structure
+### 🔍 Issue Intelligence
+- **Auto Classification**: Automatically categorize issues (bug, feature, docs, etc.)
+- **Priority Assessment**: AI evaluates issue priority based on content
+- **Duplicate Detection**: Find similar existing issues
 
-```
-ai_coding_demo/
-├── agents/              # Individual agent implementations
-│   ├── repo_scout.py    # GitHub issue discovery
-│   ├── code_explorer.py # Code analysis
-│   ├── dev_env.py       # Environment setup
-│   ├── git_ops.py       # Git operations
-│   ├── docs_logger.py   # Documentation & logging
-│   └── implementation.py # Code implementation
-├── config/              # Configuration management
-│   └── settings.py      # Config classes and setup
-├── core/                # Core orchestration
-│   └── orchestrator.py  # Master workflow coordinator
-├── logs/                # Execution logs
-└── main.py             # Entry point
-```
+### 📝 Code Review Assistant
+- **PR Analysis**: Review pull requests with AI insights
+- **Code Suggestions**: Recommend improvements
+- **Security Scan**: Basic security vulnerability detection
 
-## Supported Languages
+### 📊 Reporting
+- **Daily Standup**: Auto-generate standup reports
+- **Weekly Summary**: Project health summaries
+- **Custom Reports**: Flexible reporting templates
 
-- Python
-- JavaScript/TypeScript
-- Go
-- Rust
-- And more...
+## Quick Start
 
-## How It Works
+### Prerequisites
+- Python 3.9+
+- GitHub Token
+- OpenAI API Key (optional for AI features)
 
-```
-┌──────────────────────────────────────────────────────┐
-│              Master Orchestrator                     │
-│         (Coordinates all agents)                     │
-└─────────────────────┬────────────────────────────────┘
-                      │
-    ┌─────────────────┼─────────────────┬──────────────┐
-    │                 │                 │              │
-    ▼                 ▼                 ▼              ▼
-┌─────────┐    ┌───────────┐    ┌───────────┐   ┌─────────────┐
-│  Repo   │    │   Code    │    │   Dev     │   │    Git      │
-│ Scout   │───▶│ Explorer  │───▶│ Env       │──▶│ Ops         │
-│         │    │           │    │ Agent     │   │             │
-└─────────┘    └───────────┘    └───────────┘   └─────────────┘
-      │                                    │              │
-      │                                    ▼              │
-      │                              ┌───────────┐       │
-      │                              │Implementation│    │
-      │                              │   Agent    │──────┘
-      │                              └───────────┘
-      └────────────────────────────────────┘
-                      │
-                      ▼
-              ┌───────────────┐
-              │  Docs Logger  │
-              │(Documentation)│
-              └───────────────┘
+### Installation
+
+```bash
+git clone https://github.com/lxztry/ai-devops-bot.git
+cd ai-devops-bot
+pip install -r requirements.txt
 ```
 
-## Requirements
+### Configuration
 
-- Python 3.8+
-- Git
-- GitHub Personal Access Token
-- GitHub CLI (optional, for better PR creation)
+```bash
+cp .env.example .env
+# Edit .env with your tokens
+```
+
+```env
+GITHUB_TOKEN=your_github_token
+OPENAI_API_KEY=your_openai_key  # Optional
+WEBHOOK_SECRET=your_webhook_secret
+```
+
+### Run
+
+```bash
+python main.py
+```
+
+## GitHub Actions Integration
+
+Add to your workflow:
+
+```yaml
+name: AI DevOps Bot
+on: [issues, pull_request]
+
+jobs:
+  ai-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: lxztry/ai-devops-bot@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          openai-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+## Usage Examples
+
+### Issue Classification
+
+```bash
+# Classify an issue
+python -m cli classify --issue 123
+
+# Output:
+# Title: "Login button not working"
+# Classification: 🐛 Bug (confidence: 92%)
+# Priority: High
+# Suggested Labels: bug, priority-high, frontend
+```
+
+### Auto PR Review
+
+```bash
+# Review a PR
+python -m cli review --pr 456
+
+# Output:
+# 📝 PR Review for #456
+# ✅ Code Quality: Good
+# ⚠️ Suggestions: 2
+# 🔒 Security: Pass
+# 💡 Recommendations provided
+```
+
+### Generate Report
+
+```bash
+# Generate weekly report
+python -m cli report --type weekly --repo owner/repo
+
+# Output saved to: reports/weekly_2026-04-04.md
+```
+
+## Architecture
+
+```
+ai-devops-bot/
+├── bot/                    # Main bot logic
+│   ├── __init__.py
+│   ├── classifier.py       # Issue classification
+│   ├── reviewer.py         # PR review
+│   ├── reporter.py         # Report generation
+│   └── deployer.py        # Deploy automation
+├── cli/                   # CLI interface
+├── api/                   # API endpoints
+├── utils/                 # Utilities
+├── templates/             # Report templates
+└── main.py               # Entry point
+```
+
+## Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `GITHUB_TOKEN` | GitHub Personal Access Token | Required |
+| `OPENAI_API_KEY` | OpenAI API Key for AI features | Optional |
+| `DEFAULT_LABELS` | Default labels for classification | ["bug", "feature"] |
+| `AUTO_ASSIGN` | Auto-assign issues | true |
 
 ## License
 

@@ -1,129 +1,122 @@
-#!/usr/bin/env python3
-"""AI Coding Demo Assistant - Main Entry Point"""
+"""
+AI DevOps Bot - Main Entry Point
+"""
+
+import os
 import sys
-import argparse
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-from ai_coding_demo.config.settings import Config, setup_interactive, print_config_status, check_config
-from ai_coding_demo.core.orchestrator import MasterOrchestrator
-
+from bot.classifier import classify_issue, IssueClassifier
+from bot.reporter import generate_report
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="AI Coding Demo Assistant - 全流程AI辅助GitHub Issue开发演示"
-    )
-    parser.add_argument(
-        "--mode", "-m",
-        choices=["interactive", "demo"],
-        default="interactive",
-        help="运行模式: interactive(交互模式) 或 demo(快速演示)"
-    )
-    parser.add_argument(
-        "--config", "-c",
-        action="store_true",
-        help="进入配置向导"
-    )
-    parser.add_argument(
-        "--status", "-s",
-        action="store_true",
-        help="显示当前配置状态"
-    )
-    parser.add_argument(
-        "--workspace", "-w",
-        type=Path,
-        help="指定工作目录"
-    )
-    parser.add_argument(
-        "--token", "-t",
-        type=str,
-        help="GitHub Personal Access Token (或设置 GITHUB_TOKEN 环境变量)"
-    )
-    parser.add_argument(
-        "--local-demo",
-        action="store_true",
-        help="本地演示模式，不需要 GitHub Token"
-    )
+    """Main entry point for the bot"""
     
-    args = parser.parse_args()
+    print("""
+    ╔═══════════════════════════════════════════╗
+    ║     🤖 AI DevOps Bot                      ║
+    ║     Your AI-powered DevOps assistant      ║
+    ╚═══════════════════════════════════════════╝
+    """)
     
-    config = Config.load()
-    
-    if args.token:
-        config.git.token = args.token
-        config.save()
-        print(f"Token saved to config")
-    
-    if args.config:
-        setup_interactive()
+    if len(sys.argv) < 2:
+        print_help()
         return
     
-    if args.status:
-        print_config_status(config)
-        return
+    command = sys.argv[1]
     
-    if args.workspace:
-        config.paths.workspace = args.workspace
-        config.save()
-        print(f"Workspace set to: {args.workspace}")
-    
-    if args.local_demo:
-        print("Running local demo mode (no GitHub required)")
-        run_local_demo(config)
-        return
-    
-    is_valid, missing = check_config(config)
-    if not is_valid:
-        print(f"Configuration incomplete. Missing: {', '.join(missing)}")
-        print("Please run: python main.py --config")
-        print()
-        response = input("Configure now? (y/n): ").strip().lower()
-        if response == 'y':
-            setup_interactive()
-            config = Config.load()
-        else:
-            return
-    
-    orchestrator = MasterOrchestrator(config)
-    
-    if args.mode == "demo":
-        orchestrator.run_demo_mode()
+    if command == "classify":
+        handle_classify()
+    elif command == "report":
+        handle_report()
+    elif command == "--help" or command == "-h":
+        print_help()
     else:
-        orchestrator.run(interactive=True)
+        print(f"Unknown command: {command}")
+        print_help()
 
 
-def run_local_demo(config: Config):
-    """Run a local demo without GitHub API calls"""
-    print("=" * 60)
-    print("   Local Demo Mode")
-    print("=" * 60)
-    print()
+def print_help():
+    """Print help message"""
+    print("""
+Usage:
+    python main.py <command> [options]
+
+Commands:
+    classify    Classify an issue
+    report      Generate a report
+
+Examples:
+    # Classify an issue
+    python main.py classify "Fix login bug"
     
-    from ai_coding_demo.agents.code_explorer import CodeExplorerAgent
-    from ai_coding_demo.agents.dev_env import DevEnvAgent
+    # Generate daily report
+    python main.py report --type daily
     
-    demo_repo = "https://github.com/ansible/ansible.git"
+    # Generate weekly report
+    python main.py report --type weekly
+
+Options:
+    -h, --help    Show this help message
+""")
+
+
+def handle_classify():
+    """Handle classify command"""
+    if len(sys.argv) < 3:
+        print("Usage: python main.py classify <issue_title>")
+        return
     
-    print(f"1. Cloning demo repository: {demo_repo}")
-    explorer = CodeExplorerAgent(config.ensure_workspace())
+    title = sys.argv[2]
+    body = sys.argv[3] if len(sys.argv) > 3 else ""
     
-    try:
-        analysis = explorer.clone_and_analyze(demo_repo, branch="devel")
-        print(f"\n{analysis.structure_summary}")
-        print(f"\nRuntime detected: {analysis.get_runtime()}")
-        print(f"Test command: {analysis.get_test_command()}")
-        
-        print("\n2. Environment setup check...")
-        dev_env = DevEnvAgent(analysis.local_path)
-        runtime = dev_env.detect_runtime()
-        print(f"   Detected runtime: {runtime or 'Unknown'}")
-        
-        print("\n3. Local demo complete!")
-        print(f"   Repository cloned to: {analysis.local_path}")
-        
-    except Exception as e:
-        print(f"Error: {e}")
+    result = classify_issue(title, body)
+    
+    print(f"""
+📋 Classification Result
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Category: {result['category']}
+Priority: {result['priority']}
+Confidence: {result['confidence']:.0%}
+Labels: {', '.join(result['labels'])}
+
+💡 Suggestions:""")
+    
+    for suggestion in result.get('suggestions', []):
+        print(f"  • {suggestion}")
+
+
+def handle_report():
+    """Handle report command"""
+    report_type = "daily"
+    
+    if len(sys.argv) > 2 and sys.argv[2] == "--type":
+        if len(sys.argv) > 3:
+            report_type = sys.argv[3]
+    
+    # Sample data for demo
+    sample_data = {
+        "daily": {
+            "completed": ["Fixed authentication bug", "Updated docs"],
+            "in_progress": ["Implementing new feature"],
+            "blockers": [],
+            "planned": ["Code review", "Write tests"]
+        },
+        "weekly": {
+            "highlights": ["Launched v2.0", "Fixed 50+ bugs"],
+            "metrics": {
+                "issues_closed": 45,
+                "prs_merged": 23,
+                "commits": 156,
+                "contributors": 8
+            },
+            "next_week": ["Performance optimization", "Security audit"]
+        }
+    }
+    
+    data = sample_data.get(report_type, sample_data["daily"])
+    report = generate_report(report_type, data)
+    
+    print(report)
 
 
 if __name__ == "__main__":
