@@ -42,6 +42,7 @@ class Preferences:
     max_complexity: str = "medium"
     llm_provider: str = "openai"
     llm_model: str = "gpt-4"
+    use_ast_analysis: bool = False
     
     @classmethod
     def from_env(cls) -> "Preferences":
@@ -59,6 +60,7 @@ class Preferences:
             max_complexity=os.environ.get(f"{ENV_PREFIX}MAX_COMPLEXITY", "medium"),
             llm_provider=os.environ.get(f"{ENV_PREFIX}LLM_PROVIDER", "openai"),
             llm_model=os.environ.get(f"{ENV_PREFIX}LLM_MODEL", "gpt-4"),
+            use_ast_analysis=os.environ.get(f"{ENV_PREFIX}USE_AST", "false").lower() == "true",
         )
 
 
@@ -119,6 +121,7 @@ class Config:
                         max_complexity=env_prefs.max_complexity,
                         llm_provider=env_prefs.llm_provider,
                         llm_model=env_prefs.llm_model,
+                        use_ast_analysis=env_prefs.use_ast_analysis,
                     ),
                     paths=Paths(
                         workspace=env_paths.workspace or file_paths.workspace,

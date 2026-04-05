@@ -75,6 +75,9 @@ class MasterOrchestrator:
             self.logger.end_step(step, "failed", error="Failed to analyze repo")
             return False
         
+        if self.config.prefs.use_ast_analysis:
+            print("   (Using AST-based analysis)")
+        
         self.logger.end_step(step, "success", details={
             "language": self.analysis.language,
             "files": len(self.analysis.files),
@@ -103,10 +106,11 @@ class MasterOrchestrator:
         step = self.logger.start_step("Step 4: 配置环境")
         print("\nStep 4: 配置开发环境...")
         
+        env_result = None
+        impl_result = None
+        
         if self.parallel:
             env_result, impl_result = self._run_parallel_steps()
-            if impl_result:
-                self.result = impl_result
         else:
             dev_env = DevEnvAgent(self.analysis.local_path)
             env_result = dev_env.setup()
@@ -118,31 +122,33 @@ class MasterOrchestrator:
                 llm_model=self.config.prefs.llm_model
             )
             self.plan = impl_agent.create_implementation_plan(self.issue.body, self.issue.title)
-            self.result = impl_agent.implement(self.plan, self.issue.title, self.issue.body)
+            impl_result = impl_agent.implement(self.plan, self.issue.title, self.issue.body)
         
-        self.logger.end_step(step, "success" if env_result.success else "warning", details={
-            "runtime": env_result.runtime,
-            "installed": env_result.installed_deps or [],
-            "test_result": env_result.test_result or "N/A",
+        env_success = env_result.success if env_result else False
+        self.result = impl_result
+        
+        self.logger.end_step(step, "success" if env_success else "warning", details={
+            "runtime": env_result.runtime if env_result else "N/A",
+            "installed": env_result.installed_deps if env_result else [],
+            "test_result": env_result.test_result if env_result else "N/A",
         })
         
         step = self.logger.start_step("Step 5: 实现功能")
         print("\nStep 5: 实现代码变更...")
         
-        if not self.parallel:
-            self.logger.end_step(step, "success" if self.result.success else "warning", details={
-                "approach": self.plan.approach,
-                "complexity": self.plan.estimated_complexity,
-                "files_modified": self.result.files_modified,
-                "test_results": self.result.test_results,
-            })
-        else:
-            self.logger.end_step(step, "success" if self.result.success else "warning", details={
-                "approach": self.plan.approach if self.plan else "N/A",
-                "complexity": self.plan.estimated_complexity if self.plan else "N/A",
-                "files_modified": self.result.files_modified if self.result else [],
-                "test_results": self.result.test_results if self.result else "N/A",
-            })
+        plan_approach = self.plan.approach if self.plan else "N/A"
+        plan_complexity = self.plan.estimated_complexity if self.plan else "N/A"
+        
+        result_success = self.result.success if self.result else False
+        result_files = self.result.files_modified if self.result else []
+        result_tests = self.result.test_results if self.result else "N/A"
+        
+        self.logger.end_step(step, "success" if result_success else "warning", details={
+            "approach": plan_approach,
+            "complexity": plan_complexity,
+            "files_modified": result_files,
+            "test_results": result_tests,
+        })
         
         step = self.logger.start_step("Step 6: 提交代码")
         print("\nStep 6: 提交代码...")
@@ -245,15 +251,33 @@ class MasterOrchestrator:
         explorer = CodeExplorerAgent(self.workspace)
         
         repo_url = f"https://github.com/{repo_full_name}.git"
+        repo_name = self._extract_repo_name(repo_url)
         
         try:
-            analysis = explorer.clone_and_analyze(repo_url)
-            print(f"\n{analysis.structure_summary}")
-            self.log.info(f"Repository analysis complete: {repo_full_name}")
+            if self.config.prefs.use_ast_analysis:
+                analysis = explorer.clone_and_analyze(repo_url)
+                if analysis and analysis.files:
+                    analysis = explorer.analyze_with_ast(analysis.local_path, repo_url)
+            else:
+                analysis = explorer.clone_and_analyze(repo_url)
+            
+            if analysis:
+                print(f"\n{analysis.structure_summary}")
+                self.log.info(f"Repository analysis complete: {repo_full_name}")
             return analysis
         except Exception as e:
             self.log.error(f"Repository analysis failed: {e}")
             return None
+    
+    def _extract_repo_name(self, url: str) -> str:
+        """Extract repository name from URL"""
+        if "/" in url:
+            parts = url.rstrip("/").split("/")
+            name = parts[-1]
+            if name.endswith(".git"):
+                name = name[:-4]
+            return name
+        return url
     
     def run_demo_mode(self):
         """Run a quick demo with minimal interaction"""
@@ -266,6 +290,9 @@ class MasterOrchestrator:
     
     def _run_parallel_steps(self) -> Tuple:
         """Run environment setup and implementation in parallel"""
+        if not self.analysis or not self.issue:
+            return None, None
+            
         dev_env = DevEnvAgent(self.analysis.local_path)
         impl_agent = ImplementationAgent(
             self.analysis.local_path, 
@@ -274,15 +301,18 @@ class MasterOrchestrator:
             llm_model=self.config.prefs.llm_model
         )
         
-        self.plan = impl_agent.create_implementation_plan(self.issue.body, self.issue.title)
+        issue_body = self.issue.body or ""
+        issue_title = self.issue.title or ""
+        
+        self.plan = impl_agent.create_implementation_plan(issue_body, issue_title)
         
         with ThreadPoolExecutor(max_workers=2) as executor:
             env_future = executor.submit(dev_env.setup)
             impl_future = executor.submit(
                 impl_agent.implement, 
                 self.plan, 
-                self.issue.title, 
-                self.issue.body
+                issue_title, 
+                issue_body
             )
             
             env_result = env_future.result()

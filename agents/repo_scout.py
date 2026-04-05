@@ -121,19 +121,28 @@ class RepoScoutAgent:
         """Search using GitHub REST API"""
         import urllib.request
         import urllib.parse
+        import urllib.error
         
-        encoded_query = urllib.parse.quote(query)
-        url = f"https://api.github.com/search/issues?q={encoded_query}&per_page={limit}&sort=comments"
+        search_query = query.replace("language:", " language:").strip()
+        encoded_query = urllib.parse.quote(search_query)
+        url = f"https://api.github.com/search/issues?q={encoded_query}&per_page={limit}&sort=comments&order=desc"
         
         req = urllib.request.Request(url)
         req.add_header("Accept", "application/vnd.github.v3+json")
+        req.add_header("User-Agent", "AI-Coding-Demo")
         if self.token:
-            req.add_header("Authorization", f"token {self.token}")
+            req.add_header("Authorization", f"Bearer {self.token}")
         
         try:
             with urllib.request.urlopen(req, timeout=30) as response:
                 data = json.loads(response.read().decode())
                 return [self._parse_api_output(item) for item in data.get("items", [])]
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                print("GitHub API rate limit reached. Try using gh CLI or provide a token.")
+            else:
+                print(f"GitHub API HTTP error: {e.code} - {e.reason}")
+            return []
         except Exception as e:
             print(f"GitHub API error: {e}")
             return []

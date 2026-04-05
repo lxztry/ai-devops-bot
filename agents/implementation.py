@@ -186,6 +186,29 @@ class ImplementationAgent:
             llm_generated=llm_generated,
         )
     
+    def _validate_llm_response(self, response: str, original: str, file_path: str) -> bool:
+        """Validate LLM response is reasonable"""
+        if not response or len(response.strip()) < 10:
+            return False
+        
+        orig_len = len(original)
+        resp_len = len(response)
+        
+        if resp_len > orig_len * 3:
+            logger.warning(f"Response too large for {file_path}: {resp_len} vs {orig_len}")
+            return False
+        
+        if resp_len < orig_len * 0.3:
+            logger.warning(f"Response too small for {file_path}: {resp_len} vs {orig_len}")
+            return False
+        
+        invalid_patterns = ["```", "###", "Here's", "Here is", "Below is"]
+        if any(response.strip().startswith(p) for p in invalid_patterns):
+            logger.warning(f"Response contains markdown/intro text in {file_path}")
+            return False
+        
+        return True
+    
     def _implement_with_llm(self, plan: ImplementationPlan, issue_title: str, issue_body: str) -> List[str]:
         """Implement code using LLM"""
         modified = []
@@ -209,7 +232,7 @@ class ImplementationAgent:
                 
                 response = self.llm_client.generate(prompt, max_tokens=4000)
                 
-                if response.content and len(response.content) > len(content) * 0.5:
+                if response.content and self._validate_llm_response(response.content, content, file_path):
                     backup_path = full_path.with_suffix(full_path.suffix + ".bak")
                     backup_path.write_text(content, encoding="utf-8")
                     
